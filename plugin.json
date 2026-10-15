@@ -1,0 +1,21 @@
+{
+  "name": "gemini-web-copilot",
+  "displayName": "Gemini Web Copilot",
+  "version": "1.0.0",
+  "description": "Drive Google Gemini Web (gemini.google.com) via browser automation for deep architecture planning and code generation in Antigravity.",
+  "author": {
+    "name": "workingharry",
+    "email": "workingonly0823@gmail.com"
+  },
+  "license": "MIT",
+  "keywords": [
+    "gemini",
+    "antigravity",
+    "skill",
+    "agent",
+    "browser-automation",
+    "planning",
+    "coding",
+    "playwright"
+  ]
+}
