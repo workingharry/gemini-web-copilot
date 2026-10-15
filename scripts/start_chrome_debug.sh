@@ -2,7 +2,7 @@
 # ==============================================================================
 # start_chrome_debug.sh
 # 100% 徹底分離 (Fully Detached / Daemonized) 的 Chrome CDP 調試啟動腳本
-# 核心架構：Double-Fork + setsid() + 關閉所有檔案描述符 (FD 0,1,2,3+) + 9333 端口就緒探測
+# 核心機制：start_new_session=True (底層 setsid) + close_fds=True + DEVNULL 脫鉤 + 9333 端口就緒探測
 # ==============================================================================
 
 set -euo pipefail
@@ -45,58 +45,39 @@ fi
 
 mkdir -p "${PROFILE_DIR}"
 
-CHROME_ARGS=(
-    "--remote-debugging-port=${DEBUG_PORT}"
-    "--user-data-dir=${PROFILE_DIR}"
-    "--no-first-run"
-    "--no-default-browser-check"
-    "${TARGET_URL}"
-)
+echo "🚀 正在透過獨立 Session 守護進程啟動 Google Chrome (端口: ${DEBUG_PORT})..."
 
-echo "🚀 正在透過 Double-Fork 與 setsid 守護進程啟動 Google Chrome (端口: ${DEBUG_PORT})..."
-
-# 3. 核心：Double-Fork + setsid() 脫鉤 + 關閉全數 FD，徹底避免 Agent 背景任務掛起 (Orphaned Task)
-python3 - "${CHROME_BIN}" "${CHROME_ARGS[@]}" << 'EOF' </dev/null >/dev/null 2>&1
-import os
-import sys
+# 3. 核心：使用 start_new_session=True (底層 setsid) + close_fds=True 脫離 Agent 的 Process Group
+python3 -c '
+import sys, subprocess, os
 
 chrome_bin = sys.argv[1]
-chrome_args = sys.argv[1:]
+port = sys.argv[2]
+profile = sys.argv[3]
+target_url = sys.argv[4]
 
-# 第一次 Fork
-if os.fork() > 0:
-    sys.exit(0)
+cmd = [
+    chrome_bin,
+    f"--remote-debugging-port={port}",
+    f"--user-data-dir={profile}",
+    "--no-first-run",
+    "--no-default-browser-check",
+    target_url
+]
 
-# 建立獨立 Session 與 Process Group，徹底脫離 Agent 的 PGID 追蹤
-os.setsid()
+subprocess.Popen(
+    cmd,
+    stdin=subprocess.DEVNULL,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+    close_fds=True,
+    start_new_session=True
+)
+' "${CHROME_BIN}" "${DEBUG_PORT}" "${PROFILE_DIR}" "${TARGET_URL}"
 
-# 第二次 Fork，防止取得 Controlling TTY
-if os.fork() > 0:
-    sys.exit(0)
-
-# 重導向標準輸入、輸出、錯誤 (FD 0, 1, 2) 至 /dev/null
-devnull = os.open(os.devnull, os.O_RDWR)
-for fd in (0, 1, 2):
-    try:
-        os.dup2(devnull, fd)
-    except OSError:
-        pass
-if devnull > 2:
-    os.close(devnull)
-
-# 關閉所有殘留的 FD (防止繼承 Agent 建立的匿名狀態管道)
-try:
-    os.closerange(3, 1024)
-except Exception:
-    pass
-
-# 執行 Chrome
-os.execv(chrome_bin, chrome_args)
-EOF
-
-# 4. 主動輪詢探測 (Readiness Probe)，端口就緒後父進程立即 Exit 0 釋放調度器
+# 4. 主動輪詢探測 (Readiness Probe)，確認就緒後立即 Exit 0
 echo "⏳ 等待 Chrome 調試端口響應..."
-MAX_ATTEMPTS=30
+MAX_ATTEMPTS=20
 for ((i=1; i<=MAX_ATTEMPTS; i++)); do
     if curl -s -f --max-time 1 "${CDP_URL}" >/dev/null 2>&1; then
         echo "✅ Chrome 調試端口 (${DEBUG_PORT}) 已成功啟動並就緒！"
