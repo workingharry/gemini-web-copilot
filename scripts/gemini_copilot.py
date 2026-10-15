@@ -2,11 +2,14 @@
 """
 gemini_copilot.py
 Antigravity Skill Bridge for Google Gemini Web (gemini.google.com)
+支援跨平台：macOS、Windows、Linux (含 WSL)
 透過瀏覽器自動化驅動 Gemini 網頁版進行代碼撰寫與規劃，並提取原生 Markdown。
 """
 
 import argparse
 import os
+import platform
+import shutil
 import subprocess
 import sys
 import time
@@ -17,7 +20,7 @@ from pathlib import Path
 try:
     from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 except ImportError:
-    print("❌ 缺少 playwright 依賴，請先執行 setup_env.sh 或使用 run.sh 啟動！", file=sys.stderr)
+    print("❌ 缺少 playwright 依賴，請先執行 setup_env.sh (或 setup_env.bat)！", file=sys.stderr)
     sys.exit(1)
 
 try:
@@ -28,11 +31,39 @@ except ImportError:
 DEBUG_PORT = 9333
 CDP_URL = f"http://127.0.0.1:{DEBUG_PORT}"
 PROFILE_DIR = os.path.expanduser("~/.gemini/chrome_profile")
-CHROME_PATH = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+CURRENT_OS = platform.system()
+
+
+def find_chrome_executable() -> str:
+    """跨平台智慧尋找 Google Chrome 可執行檔路徑"""
+    if CURRENT_OS == "Darwin":
+        candidates = [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        ]
+        for p in candidates:
+            if os.path.isfile(p) and os.access(p, os.X_OK):
+                return p
+    elif CURRENT_OS == "Windows":
+        candidates = [
+            os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
+        ]
+        for p in candidates:
+            if os.path.isfile(p):
+                return p
+    else:  # Linux & WSL
+        for binary in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
+            p = shutil.which(binary)
+            if p:
+                return p
+    raise FileNotFoundError(f"無法在當前系統 ({CURRENT_OS}) 上找到 Google Chrome 執行檔，請確認已安裝 Chrome。")
 
 
 def is_cdp_ready():
-    """檢查 Chrome 調試端口是否響應"""
+    """檢查 Chrome 調試端口是否響應 (HTTP 200)"""
     try:
         req = urllib.request.Request(f"{CDP_URL}/json/version", headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=1.5) as resp:
@@ -42,7 +73,7 @@ def is_cdp_ready():
 
 
 def ensure_chrome_running():
-    """若 Chrome 端口未啟動，自動透過獨立 profile 啟動"""
+    """若 Chrome 端口未啟動，自動透過獨立 profile 與脫鉤守護進程啟動"""
     if is_cdp_ready():
         return True
 
@@ -50,20 +81,31 @@ def ensure_chrome_running():
     os.makedirs(PROFILE_DIR, exist_ok=True)
     
     script_dir = Path(__file__).resolve().parent
-    start_script = script_dir / "start_chrome_debug.sh"
-    
-    if start_script.exists():
-        subprocess.run(["bash", str(start_script)], check=False)
+    chrome_bin = find_chrome_executable()
+
+    cmd = [
+        chrome_bin,
+        f"--remote-debugging-port={DEBUG_PORT}",
+        f"--user-data-dir={PROFILE_DIR}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "https://gemini.google.com/app"
+    ]
+
+    # 跨平台守護進程分離 (完全避免 Agent 孤兒任務殘留)
+    if CURRENT_OS == "Windows":
+        DETACHED_PROCESS = 0x00000008
+        CREATE_NEW_PROCESS_GROUP = 0x00000200
+        subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+        )
     else:
-        # Fallback 啟動命令
-        cmd = [
-            CHROME_PATH,
-            f"--remote-debugging-port={DEBUG_PORT}",
-            f"--user-data-dir={PROFILE_DIR}",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "https://gemini.google.com/app"
-        ]
+        # macOS & Linux: 呼叫 setsid 與關閉檔案描述符
         subprocess.Popen(
             cmd,
             stdin=subprocess.DEVNULL,
@@ -72,13 +114,12 @@ def ensure_chrome_running():
             close_fds=True,
             start_new_session=True
         )
-        time.sleep(1)
 
-    # 等待端口就緒
-    for _ in range(15):
+    # 主動等待端口就緒 (最多等待 10 秒)
+    for _ in range(25):
         if is_cdp_ready():
             return True
-        time.sleep(0.5)
+        time.sleep(0.4)
 
     return is_cdp_ready()
 
@@ -91,7 +132,7 @@ def find_or_open_gemini_page(context):
             page.bring_to_front()
             return page
 
-    # 若有其他 gemini 頁面（例如 /usage），直接導航至 /app
+    # 若有其他 gemini 頁面（例如 /usage 或 /settings），直接導航至 /app
     for page in context.pages:
         if "gemini.google.com" in page.url:
             print(f"🌐 導航現有 Gemini 標籤頁至對話主頁...", file=sys.stderr)
@@ -161,12 +202,16 @@ def send_prompt(page, prompt_text, file_path=None):
             # 複製到系統剪貼簿
             if pyperclip:
                 pyperclip.copy(prompt_text)
-            else:
+            elif CURRENT_OS == "Darwin":
                 p = subprocess.Popen(["pbcopy"], stdin=subprocess.PIPE)
                 p.communicate(prompt_text.encode("utf-8"))
+            elif CURRENT_OS == "Windows":
+                p = subprocess.Popen(["clip"], stdin=subprocess.PIPE, shell=True)
+                p.communicate(prompt_text.encode("utf-8"))
             
-            # 在輸入框中執行 Cmd+V (macOS)
-            page.keyboard.press("Meta+V")
+            # 在輸入框中執行貼上 (macOS: Meta+V, Windows/Linux: Control+V)
+            paste_key = "Meta+V" if CURRENT_OS == "Darwin" else "Control+V"
+            page.keyboard.press(paste_key)
             time.sleep(0.5)
         except Exception as e:
             print(f"⚠️ 剪貼簿注入失敗，改以模擬輸入: {e}", file=sys.stderr)
@@ -279,6 +324,15 @@ def extract_response_markdown(page):
         "button[data-test-id='copy-button']"
     ]
     
+    # 清空剪貼簿
+    try:
+        if pyperclip:
+            pyperclip.copy("")
+        elif CURRENT_OS == "Darwin":
+            subprocess.run(["pbcopy"], input=b"", check=False)
+    except Exception:
+        pass
+
     # 點擊最後一個（最新回覆的）訊息複製按鈕
     for c_sel in message_copy_selectors:
         buttons = page.query_selector_all(c_sel)
@@ -300,8 +354,11 @@ def extract_response_markdown(page):
                 copied_text = ""
                 if pyperclip:
                     copied_text = pyperclip.paste()
-                else:
+                elif CURRENT_OS == "Darwin":
                     p = subprocess.Popen(["pbpaste"], stdout=subprocess.PIPE)
+                    copied_text = p.communicate()[0].decode("utf-8", errors="ignore")
+                elif CURRENT_OS == "Windows":
+                    p = subprocess.Popen(["powershell", "-NoProfile", "Get-Clipboard"], stdout=subprocess.PIPE)
                     copied_text = p.communicate()[0].decode("utf-8", errors="ignore")
 
                 if copied_text and len(copied_text.strip()) > 0:
@@ -331,7 +388,7 @@ def extract_response_markdown(page):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Antigravity Gemini Web Copilot Bridge")
+    parser = argparse.ArgumentParser(description="Antigravity Gemini Web Copilot Bridge (Cross-Platform)")
     parser.add_argument("--prompt", "-p", help="發送給 Gemini 的文字提示詞")
     parser.add_argument("--prompt-file", help="從指定的檔案讀取提示詞")
     parser.add_argument("--context-file", "-f", help="附加的程式碼或設計 Context 檔案路徑")

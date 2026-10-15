@@ -1,6 +1,7 @@
 # Gemini Web Copilot for Google Antigravity 🚀
 
 [![Antigravity Skill](https://img.shields.io/badge/Antigravity-Skill%20%26%20Agent-4285F4?style=flat-square&logo=google)](https://github.com/workingharry/gemini-web-copilot)
+[![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows%20%7C%20Linux-brightgreen?style=flat-square)](https://github.com/workingharry/gemini-web-copilot)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)](LICENSE)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg?style=flat-square&logo=python)](https://www.python.org/)
 [![Playwright](https://img.shields.io/badge/Playwright-CDP%20Automation-orange?style=flat-square&logo=playwright)](https://playwright.dev/)
@@ -14,6 +15,14 @@
 
 **Gemini Web Copilot** 是一個專為 [Google Antigravity](https://deepmind.google/technologies/gemini/) 打造的自定義技能（Skill）與子代理人（Subagent）。它透過真實 Chrome 瀏覽器自動化（CDP 協議）直接連接使用者的 [Google Gemini 網頁版](https://gemini.google.com)，藉助其強大的 **Thinking 深度思考模式**、**長上下文視窗** 或 **自訂 Gems** 進行架構規劃（Planning）與代碼撰寫（Coding），並將成果 100% 無失真提取回專案進行除錯與驗證。
 
+### 💻 完美支援三大作業系統 (Cross-Platform)
+
+- 🍏 **macOS**：支援 Apple Silicon (M1/M2/M3/M4) 與 Intel Mac，自動適配 `Meta+V` 剪貼簿注入與獨立 Session 脫鉤。
+- 🪟 **Windows**：支援 Windows 10 / 11（PowerShell、CMD 與 WSL），自動尋找 `Program Files` 預設 Chrome，自動適配 `Control+V` 與 `DETACHED_PROCESS` 進程分離。
+- 🐧 **Linux**：支援 Ubuntu、Debian、Fedora 等主流發行版。
+
+---
+
 ### ✨ 核心特性
 
 - 🎯 **免重複登入（Session 持久化）**：採用獨立 Chrome Profile (`~/.gemini/chrome_profile`)，用戶僅需在真實 Chrome 登入一次，後續調用永久復用。
@@ -25,19 +34,19 @@
 
 ---
 
-### 📦 跨電腦一鍵安裝 (1-Line Install)
+### 📦 一鍵跨電腦安裝 (1-Line Install)
 
-在任何電腦（macOS / Linux）的終端機中，只需貼上並執行此單行指令：
-
+#### 🍏 macOS / 🐧 Linux：
+在終端機中執行：
 ```bash
 curl -fsSL https://raw.githubusercontent.com/workingharry/gemini-web-copilot/main/install.sh | bash
 ```
 
-> **或者手動 Clone 安裝：**
-> ```bash
-> git clone https://github.com/workingharry/gemini-web-copilot.git ~/.gemini/config/skills/gemini-web-copilot
-> cd ~/.gemini/config/skills/gemini-web-copilot && bash scripts/setup_env.sh
-> ```
+#### 🪟 Windows (PowerShell)：
+在 PowerShell 中執行：
+```powershell
+irm https://raw.githubusercontent.com/workingharry/gemini-web-copilot/main/install.ps1 | iex
+```
 
 ---
 
@@ -45,11 +54,15 @@ curl -fsSL https://raw.githubusercontent.com/workingharry/gemini-web-copilot/mai
 
 在新電腦安裝完畢後，執行以下指令拉起獨立 Chrome 視窗：
 
-```bash
-bash ~/.gemini/config/skills/gemini-web-copilot/scripts/run.sh --launch-only
-```
-- 在彈出的 Chrome 視窗中登入您的 Google / Gemini 帳號。
-- 登入完成後即可關閉或留著視窗，Session 永久生效！
+- **macOS / Linux**：
+  ```bash
+  bash ~/.gemini/config/skills/gemini-web-copilot/scripts/run.sh --launch-only
+  ```
+- **Windows (CMD / PowerShell)**：
+  ```cmd
+  "%USERPROFILE%\.gemini\config\skills\gemini-web-copilot\scripts\run.bat" --launch-only
+  ```
+在彈出的 Chrome 視窗中登入您的 Google / Gemini 帳號，Session 永久生效！
 
 ---
 
@@ -58,7 +71,7 @@ bash ~/.gemini/config/skills/gemini-web-copilot/scripts/run.sh --launch-only
 ```mermaid
 flowchart TD
     User["用戶需求"] --> Plan["/plan 階段 (Gemini Web)"]
-    Plan -->|"run.sh 驅動已登入之 Chrome"| Web["Gemini Thinking / Gems 思考規劃"]
+    Plan -->|"run.sh / run.bat 驅動已登入之 Chrome"| Web["Gemini Thinking / Gems 思考規劃"]
     Web -->|"原生 Copy 提取 Markdown"| Doc["docs/plan.md 交付用戶審核"]
     Doc --> Go["/go 階段 (Antigravity)"]
     Go --> Implement["落地程式碼、補齊型別"]
@@ -80,19 +93,22 @@ flowchart TD
 
 ### 🛠️ 獨立終端命令列 (CLI Usage)
 
+#### macOS / Linux:
 ```bash
-# 1. 單純傳送文字提示詞並印出回應
+# 單純傳送文字提示詞並印出回應
 bash ~/.gemini/config/skills/gemini-web-copilot/scripts/run.sh \
   --prompt "請幫我設計一個支援指數退避的 TypeScript 重試模組"
 
-# 2. 攜帶 Context 檔案並直接保存產出
+# 攜帶 Context 檔案並直接保存產出
 bash ~/.gemini/config/skills/gemini-web-copilot/scripts/run.sh \
   --prompt "請重構此程式碼" \
   --context-file ./src/app.ts \
   --output ./docs/refactored.md
+```
 
-# 3. 執行系統與連線健康診斷
-~/.gemini/gemini_copilot_env/bin/python ~/.gemini/config/skills/gemini-web-copilot/scripts/debug_gemini_skill.py
+#### Windows:
+```cmd
+"%USERPROFILE%\.gemini\config\skills\gemini-web-copilot\scripts\run.bat" --prompt "請幫我設計一個支援指數退避的 TypeScript 重試模組"
 ```
 
 ---
@@ -102,19 +118,21 @@ bash ~/.gemini/config/skills/gemini-web-copilot/scripts/run.sh \
 
 **Gemini Web Copilot** is a custom Skill & Subagent tailored for [Google Antigravity](https://deepmind.google/technologies/gemini/). It connects directly to your [Google Gemini Web UI](https://gemini.google.com) via Chrome DevTools Protocol (CDP), allowing Antigravity to harness Gemini's **Deep Thinking model**, **ultra-long context window**, or **custom Gems** for architecture planning and code generation.
 
-### 🌟 Key Highlights
-
-1. **Zero-Friction Authentication**: Uses an isolated Chrome user data directory (`~/.gemini/chrome_profile`). Sign in once with Google 2FA, and cookies/session persist permanently.
-2. **Chrome v136+ Security Compliant**: Uses dedicated CDP port `9333` and explicit profile paths to avoid new Chrome remote debugging restrictions.
-3. **Stop & Action-bar Monitoring**: Waits for generation completion without relying on the empty-input Send button.
-4. **Fidelity Markdown via Native Copy**: Clicks Gemini's native copy button to retrieve clean, untouched markdown directly from the clipboard.
-5. **Seamless /plan & /go Integration**: Plan with Gemini Web, then implement and debug with Antigravity.
+### 💻 Triple-Platform Support
+- 🍏 **macOS**: Native `Meta+V` injection, `setsid()` daemonization.
+- 🪟 **Windows**: PowerShell installer (`install.ps1`), `run.bat`, `start_chrome_debug.bat`, `Control+V` paste handling, `DETACHED_PROCESS` separation.
+- 🐧 **Linux**: Native curl installer, chromium binary resolution.
 
 ### 📦 Quick Installation (1-Line Command)
 
-Run this single command on any machine:
+**macOS / Linux:**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/workingharry/gemini-web-copilot/main/install.sh | bash
+```
+
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/workingharry/gemini-web-copilot/main/install.ps1 | iex
 ```
 
 ---
