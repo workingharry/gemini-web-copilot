@@ -395,6 +395,12 @@ def main():
     parser.add_argument("--output", "-o", help="將生成的 Markdown/代碼寫入指定檔案")
     parser.add_argument("--timeout", type=int, default=300, help="等待生成完成的最長秒數 (預設: 300)")
     parser.add_argument("--launch-only", action="store_true", help="僅啟動並連接 Chrome，不發送 Prompt")
+    
+    # 智慧上下文增強參數
+    parser.add_argument("--task", choices=["plan", "code", "debug"], help="自動套用深度架構(plan)/撰碼(code)/除錯(debug) 專家 Prompt 範本")
+    parser.add_argument("--instructions", "-i", help="任務目標指令 (搭配 --task 使用)")
+    parser.add_argument("--include", nargs="*", help="包含在 Context 中的專案檔案清單 (例如 --include src/app.ts src/types.ts)")
+    parser.add_argument("--auto-context", action="store_true", help="自動掃描專案元數據 (package.json, git, 目錄樹) 並打包")
     args = parser.parse_args()
 
     # 確保 Chrome 已啟動
@@ -408,6 +414,26 @@ def main():
             prompt_content = f.read()
     elif args.prompt:
         prompt_content = args.prompt
+
+    # 智慧豐富上下文組合
+    if args.task or args.include or args.auto_context:
+        try:
+            from context_builder import build_rich_prompt
+            task_type = args.task or "plan"
+            raw_instructions = args.instructions or prompt_content
+            if not raw_instructions:
+                print("❌ 使用 --task 或 --auto-context 時，請提供 --instructions 或 --prompt 指定具體需求！", file=sys.stderr)
+                sys.exit(1)
+
+            prompt_content = build_rich_prompt(
+                task=task_type,
+                instructions=raw_instructions,
+                include_files=args.include,
+                root_dir="."
+            )
+            print(f"📦 已智慧組裝萬字級豐富上下文 ({len(prompt_content)} 字元，任務類型: {task_type})", file=sys.stderr)
+        except Exception as e:
+            print(f"⚠️ 上下文打包警告: {e}，回退至原始提示詞", file=sys.stderr)
 
     with sync_playwright() as p:
         print(f"🔌 連接至 Chrome CDP: {CDP_URL}", file=sys.stderr)
