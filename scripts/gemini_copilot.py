@@ -64,8 +64,15 @@ def ensure_chrome_running():
             "--no-default-browser-check",
             "https://gemini.google.com/app"
         ]
-        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(2)
+        subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            start_new_session=True
+        )
+        time.sleep(1)
 
     # 等待端口就緒
     for _ in range(15):

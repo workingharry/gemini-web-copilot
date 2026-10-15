@@ -1,69 +1,109 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # start_chrome_debug.sh
-# 啟動具備遠程調試端口 (CDP: 9333) 的 Google Chrome
-# 遵循 Chrome v136+ 安全限制：使用獨立 --user-data-dir
+# 100% 徹底分離 (Fully Detached / Daemonized) 的 Chrome CDP 調試啟動腳本
+# 核心架構：Double-Fork + setsid() + 關閉所有檔案描述符 (FD 0,1,2,3+) + 9333 端口就緒探測
 # ==============================================================================
 
 set -euo pipefail
 
-DEBUG_PORT=9333
-PROFILE_DIR="${HOME}/.gemini/chrome_profile"
-CHROME_APP="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+DEBUG_PORT="${1:-9333}"
+PROFILE_DIR="${2:-${HOME}/.gemini/chrome_profile}"
+CDP_URL="http://127.0.0.1:${DEBUG_PORT}/json/version"
+TARGET_URL="https://gemini.google.com/app"
 
-# 1. 檢查 Google Chrome 是否安裝
-if [[ ! -f "$CHROME_APP" ]]; then
-  echo "❌ 找不到 Google Chrome: $CHROME_APP" >&2
-  echo "請確認本機已安裝 Google Chrome 瀏覽器。" >&2
-  exit 1
+# 1. 冪等檢查：如果 9333 端口已在監聽中，直接退出 (Exit 0)
+if curl -s -f --max-time 1 "${CDP_URL}" >/dev/null 2>&1; then
+    echo "✅ Chrome 調試端口 (${DEBUG_PORT}) 已經在運行中。"
+    exit 0
 fi
 
-# 2. 檢查 9333 端口是否已經開放 (使用 -f 確保 404/500 被視為未就緒)
-if curl -s -f "http://127.0.0.1:${DEBUG_PORT}/json/version" >/dev/null 2>&1; then
-  echo "✅ Chrome 遠程調試端口 (${DEBUG_PORT}) 已經在運行中。"
-  exit 0
+# 2. 自動尋找 Chrome 執行檔
+detect_chrome_bin() {
+    local mac_paths=(
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary"
+        "/Applications/Chromium.app/Contents/MacOS/Chromium"
+    )
+    for p in "${mac_paths[@]}"; do
+        [[ -x "$p" ]] && { echo "$p"; return 0; }
+    done
+
+    # Linux fallback
+    local linux_bins=("google-chrome" "google-chrome-stable" "chromium" "chromium-browser")
+    for b in "${linux_bins[@]}"; do
+        command -v "$b" >/dev/null 2>&1 && { command -v "$b"; return 0; }
+    done
+    return 1
+}
+
+CHROME_BIN="$(detect_chrome_bin || true)"
+if [[ -z "${CHROME_BIN}" ]]; then
+    echo "❌ 找不到 Google Chrome 執行檔！" >&2
+    exit 1
 fi
 
-# 3. 確保獨立 Profile 目錄存在
-mkdir -p "$PROFILE_DIR"
+mkdir -p "${PROFILE_DIR}"
 
-echo "🚀 正在啟動 Google Chrome (調試模式)..."
-echo "   端口: ${DEBUG_PORT}"
-echo "   配置檔目錄: ${PROFILE_DIR}"
+CHROME_ARGS=(
+    "--remote-debugging-port=${DEBUG_PORT}"
+    "--user-data-dir=${PROFILE_DIR}"
+    "--no-first-run"
+    "--no-default-browser-check"
+    "${TARGET_URL}"
+)
 
-# 4. 啟動 Chrome
-# 關鍵：指定獨立的 --user-data-dir 避免新版 Chrome (v136+) 安全限制
-nohup "$CHROME_APP" \
-  --remote-debugging-port="${DEBUG_PORT}" \
-  --user-data-dir="${PROFILE_DIR}" \
-  --no-first-run \
-  --no-default-browser-check \
-  "https://gemini.google.com/app" >/dev/null 2>&1 &
+echo "🚀 正在透過 Double-Fork 與 setsid 守護進程啟動 Google Chrome (端口: ${DEBUG_PORT})..."
 
-CHROME_PID=$!
-echo "   Chrome 進程 PID: ${CHROME_PID}"
+# 3. 核心：Double-Fork + setsid() 脫鉤 + 關閉全數 FD，徹底避免 Agent 背景任務掛起 (Orphaned Task)
+python3 - "${CHROME_BIN}" "${CHROME_ARGS[@]}" << 'EOF' </dev/null >/dev/null 2>&1
+import os
+import sys
 
-# 5. 等待調試端口就緒
+chrome_bin = sys.argv[1]
+chrome_args = sys.argv[1:]
+
+# 第一次 Fork
+if os.fork() > 0:
+    sys.exit(0)
+
+# 建立獨立 Session 與 Process Group，徹底脫離 Agent 的 PGID 追蹤
+os.setsid()
+
+# 第二次 Fork，防止取得 Controlling TTY
+if os.fork() > 0:
+    sys.exit(0)
+
+# 重導向標準輸入、輸出、錯誤 (FD 0, 1, 2) 至 /dev/null
+devnull = os.open(os.devnull, os.O_RDWR)
+for fd in (0, 1, 2):
+    try:
+        os.dup2(devnull, fd)
+    except OSError:
+        pass
+if devnull > 2:
+    os.close(devnull)
+
+# 關閉所有殘留的 FD (防止繼承 Agent 建立的匿名狀態管道)
+try:
+    os.closerange(3, 1024)
+except Exception:
+    pass
+
+# 執行 Chrome
+os.execv(chrome_bin, chrome_args)
+EOF
+
+# 4. 主動輪詢探測 (Readiness Probe)，端口就緒後父進程立即 Exit 0 釋放調度器
 echo "⏳ 等待 Chrome 調試端口響應..."
-MAX_ATTEMPTS=20
-ATTEMPT=0
-READY=false
-
-while [[ $ATTEMPT -lt $MAX_ATTEMPTS ]]; do
-  if curl -s -f "http://127.0.0.1:${DEBUG_PORT}/json/version" >/dev/null 2>&1; then
-    READY=true
-    break
-  fi
-  sleep 0.5
-  ATTEMPT=$((ATTEMPT + 1))
+MAX_ATTEMPTS=30
+for ((i=1; i<=MAX_ATTEMPTS; i++)); do
+    if curl -s -f --max-time 1 "${CDP_URL}" >/dev/null 2>&1; then
+        echo "✅ Chrome 調試端口 (${DEBUG_PORT}) 已成功啟動並就緒！"
+        exit 0
+    fi
+    sleep 0.3
 done
 
-if [[ "$READY" == "true" ]]; then
-  echo "✅ Chrome 調試端口 (${DEBUG_PORT}) 已成功啟動並就緒！"
-  echo "💡 提示：若這是您首次啟動此 Profile，請在彈出的 Chrome 視窗中完成 Google 帳號登入一次，後續將永久復用。"
-  exit 0
-else
-  echo "⚠️ Chrome 已啟動，但調試端口 (${DEBUG_PORT}) 在 10 秒內未響應。" >&2
-  echo "請檢查 Chrome 視窗是否正常啟動，或是否有其他程式佔用該端口。" >&2
-  exit 1
-fi
+echo "⚠️ 等待 Chrome 調試端口 (${DEBUG_PORT}) 逾時。" >&2
+exit 1
