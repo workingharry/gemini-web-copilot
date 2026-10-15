@@ -95,21 +95,34 @@ flowchart TD
 
 #### macOS / Linux:
 ```bash
-# 單純傳送文字提示詞並印出回應
+# 1. 深度架構規劃 (Plan Mode) - 自動分析專案架構與依賴
 bash ~/.gemini/config/skills/gemini-web-copilot/scripts/run.sh \
-  --prompt "請幫我設計一個支援指數退避的 TypeScript 重試模組"
+  --task plan \
+  --instructions "請設計一個具備冪等性與死信佇列的付款處理管道" \
+  --auto-context \
+  --include ./package.json ./src/services/payment.ts \
+  --output ./docs/architecture_plan.md
 
-# 攜帶 Context 檔案並直接保存產出
+# 2. 嚴格代碼實作 (Code Mode) - 攜帶相關源碼，要求 0 佔位符與完整測試
 bash ~/.gemini/config/skills/gemini-web-copilot/scripts/run.sh \
-  --prompt "請重構此程式碼" \
-  --context-file ./src/app.ts \
-  --output ./docs/refactored.md
+  --task code \
+  --instructions "根據付款設計實作 PaymentProcessor 類別" \
+  --include ./src/services/payment.ts \
+  --output ./src/services/PaymentProcessor.ts
+
+# 3. 根因除錯診斷 (Debug Mode) - 攜帶錯誤日誌與問題源碼
+bash ~/.gemini/config/skills/gemini-web-copilot/scripts/run.sh \
+  --task debug \
+  --instructions "修復併發付款時出現的 LockTimeoutException" \
+  --include ./logs/error.log ./src/services/payment.ts \
+  --output ./docs/rca_fix.md
 ```
 
 #### Windows:
 ```cmd
-"%USERPROFILE%\.gemini\config\skills\gemini-web-copilot\scripts\run.bat" --prompt "請幫我設計一個支援指數退避的 TypeScript 重試模組"
+"%USERPROFILE%\.gemini\config\skills\gemini-web-copilot\scripts\run.bat" --task plan --instructions "請規劃重構方案" --auto-context --output .\docs\plan.md
 ```
+
 
 ---
 
