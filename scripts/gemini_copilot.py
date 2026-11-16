@@ -603,6 +603,7 @@ def main():
                 explicit_model=args.model,
                 explicit_thinking=args.thinking,
                 timeout=args.timeout,
+                max_wait_seconds=args.timeout,
             )
             if api_res["ok"]:
                 result_text = api_res["output"]

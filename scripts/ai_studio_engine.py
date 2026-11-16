@@ -170,10 +170,13 @@ def execute_ai_studio_query(
     explicit_model: Optional[str] = None,
     explicit_thinking: Optional[str] = None,
     api_key: Optional[str] = None,
-    timeout: int = 120,
+    timeout: int = 300,
+    max_wait_seconds: int = 300,
 ) -> Dict[str, Any]:
     """
-    Execute AI Studio prompt generation with thinking budgets and automatic error cascade.
+    Execute AI Studio prompt generation with thinking budgets and intelligent wait-and-retry.
+    When flagship models (gemini-4-argon, gemini-4-hydrogen) hit 429 rate limit or 503 high load,
+    it waits and retries for up to max_wait_seconds (default: 300s / 5 minutes) before downgrading.
     """
     try:
         key = load_gemini_api_key(api_key)
@@ -191,67 +194,118 @@ def execute_ai_studio_query(
 
     for model_name, default_budget in cascade:
         budget = parse_thinking_budget(explicit_thinking, default_budget)
-        print(f"⚡ [AI Studio Engine] Attempting {model_name} (Thinking Budget: {budget})...", file=sys.stderr)
+        model_start_time = time.time()
+        attempt = 0
 
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={key}"
-        body: Dict[str, Any] = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "systemInstruction": {"parts": [{"text": system_prompt}]},
-        }
+        while True:
+            attempt += 1
+            elapsed = time.time() - model_start_time
 
-        gen_config: Dict[str, Any] = {}
-        if budget > 0:
-            gen_config["thinkingConfig"] = {"thinkingBudget": budget}
-        if gen_config:
-            body["generationConfig"] = gen_config
-
-        payload = json.dumps(body).encode("utf-8")
-        req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
-
-        try:
-            start_t = time.time()
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                duration = time.time() - start_t
-
-                candidates = data.get("candidates", [])
-                if not candidates:
-                    errors.append(f"{model_name}: No candidates returned")
-                    continue
-
-                parts = candidates[0].get("content", {}).get("parts", [])
-                output_text = "".join(p.get("text", "") for p in parts if "text" in p)
-
-                # Collect thought summary if available
-                thought_parts = [p.get("text", "") for p in parts if "thought" in p]
-                thought_chars = sum(len(t) for t in thought_parts)
-
+            if attempt == 1:
+                print(f"⚡ [AI Studio Engine] Attempting {model_name} (Thinking Budget: {budget})...", file=sys.stderr)
+            else:
                 print(
-                    f"✅ [AI Studio Engine] {model_name} completed in {duration:.2f}s "
-                    f"({len(output_text)} chars, thoughts: {thought_chars} chars)",
-                    file=sys.stderr
+                    f"🔄 [AI Studio Engine] Retrying {model_name} (Attempt #{attempt}, Elapsed: {elapsed:.1f}s / {max_wait_seconds}s)...",
+                    file=sys.stderr,
                 )
 
-                return {
-                    "ok": True,
-                    "output": output_text,
-                    "model_used": model_name,
-                    "thinking_budget": budget,
-                    "duration_sec": duration,
-                    "error": None,
-                }
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={key}"
+            body: Dict[str, Any] = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "systemInstruction": {"parts": [{"text": system_prompt}]},
+            }
 
-        except urllib.error.HTTPError as e:
-            err_body = e.read().decode("utf-8", errors="replace")
-            print(f"⚠️ [AI Studio Engine] {model_name} returned HTTP {e.code}: {err_body[:200]}", file=sys.stderr)
-            errors.append(f"{model_name} (HTTP {e.code}): {err_body[:150]}")
-            # If 429 rate limit or 503 high demand, immediately cascade to next model
-            time.sleep(0.5)
-            continue
-        except Exception as e:
-            print(f"⚠️ [AI Studio Engine] {model_name} error: {e}", file=sys.stderr)
-            errors.append(f"{model_name}: {str(e)}")
-            continue
+            gen_config: Dict[str, Any] = {}
+            if budget > 0:
+                gen_config["thinkingConfig"] = {"thinkingBudget": budget}
+            if gen_config:
+                body["generationConfig"] = gen_config
+
+            payload = json.dumps(body).encode("utf-8")
+            req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+
+            try:
+                start_t = time.time()
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    duration = time.time() - start_t
+
+                    candidates = data.get("candidates", [])
+                    if not candidates:
+                        errors.append(f"{model_name}: No candidates returned")
+                        break
+
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    output_text = "".join(p.get("text", "") for p in parts if "text" in p)
+
+                    # Collect thought summary if available
+                    thought_parts = [p.get("text", "") for p in parts if "thought" in p]
+                    thought_chars = sum(len(t) for t in thought_parts)
+
+                    print(
+                        f"✅ [AI Studio Engine] {model_name} completed in {duration:.2f}s "
+                        f"({len(output_text)} chars, thoughts: {thought_chars} chars)",
+                        file=sys.stderr,
+                    )
+
+                    return {
+                        "ok": True,
+                        "output": output_text,
+                        "model_used": model_name,
+                        "thinking_budget": budget,
+                        "duration_sec": duration,
+                        "error": None,
+                    }
+
+            except urllib.error.HTTPError as e:
+                err_body = e.read().decode("utf-8", errors="replace")
+                elapsed_now = time.time() - model_start_time
+
+                # 429: Rate Limit / Quota; 503: Service Unavailable; 500: Transient Internal Error
+                is_retryable = e.code in (429, 500, 502, 503, 504)
+
+                if is_retryable and elapsed_now < max_wait_seconds:
+                    # Check for Retry-After header
+                    retry_after_hdr = e.headers.get("Retry-After")
+                    if retry_after_hdr and retry_after_hdr.isdigit():
+                        delay = float(retry_after_hdr)
+                    else:
+                        # Progressive backoff: 5s, 10s, 15s, capped at 20s
+                        delay = min(20.0, 5.0 * attempt)
+
+                    if elapsed_now + delay >= max_wait_seconds:
+                        print(
+                            f"⚠️ [AI Studio Engine] {model_name} (HTTP {e.code}) 等待將超過 5 分鐘上限 ({max_wait_seconds}s)，準備回退至下一階模型...",
+                            file=sys.stderr,
+                        )
+                        errors.append(f"{model_name} (HTTP {e.code} Timeout > {max_wait_seconds}s): {err_body[:150]}")
+                        break
+
+                    print(
+                        f"⏳ [AI Studio Engine] {model_name} 遇到 HTTP {e.code} (速率限制/負載)，等待 {delay:.1f}s 後重試 (已等待 {elapsed_now:.1f}s / 上限 {max_wait_seconds}s)...",
+                        file=sys.stderr,
+                    )
+                    time.sleep(delay)
+                    continue
+                else:
+                    print(f"⚠️ [AI Studio Engine] {model_name} returned HTTP {e.code}: {err_body[:200]}", file=sys.stderr)
+                    errors.append(f"{model_name} (HTTP {e.code}): {err_body[:150]}")
+                    break
+
+            except Exception as e:
+                elapsed_now = time.time() - model_start_time
+                if elapsed_now < max_wait_seconds:
+                    delay = min(15.0, 3.0 * attempt)
+                    if elapsed_now + delay < max_wait_seconds:
+                        print(
+                            f"⏳ [AI Studio Engine] {model_name} 連線異常 ({e})，等待 {delay:.1f}s 後重試 (已等待 {elapsed_now:.1f}s / 上限 {max_wait_seconds}s)...",
+                            file=sys.stderr,
+                        )
+                        time.sleep(delay)
+                        continue
+                print(f"⚠️ [AI Studio Engine] {model_name} error: {e}", file=sys.stderr)
+                errors.append(f"{model_name}: {str(e)}")
+                break
 
     return {
         "ok": False,
