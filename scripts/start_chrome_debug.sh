@@ -62,6 +62,8 @@ cmd = [
     f"--user-data-dir={profile}",
     "--no-first-run",
     "--no-default-browser-check",
+    "--window-position=100,100",
+    "--window-size=1280,800",
     target_url
 ]
 

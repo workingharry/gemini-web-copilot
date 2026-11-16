@@ -69,8 +69,8 @@ def get_project_metadata(root_dir: str) -> str:
                     meta_lines.append(f"- **Core Dependencies**: `{', '.join(deps)}`")
                 if dev_deps:
                     meta_lines.append(f"- **Dev Dependencies**: `{', '.join(dev_deps)}`")
-        except Exception:
-            pass
+        except (json.JSONDecodeError, OSError) as err:
+            meta_lines.append(f"- **package.json Parse Note**: {err}")
 
     # 2. Python
     pyproject = root / "pyproject.toml"
@@ -82,8 +82,8 @@ def get_project_metadata(root_dir: str) -> str:
             with open(reqs, "r", encoding="utf-8") as f:
                 libs = [line.strip() for line in f if line.strip() and not line.startswith("#")][:10]
                 meta_lines.append(f"- **Python Dependencies**: `{', '.join(libs)}`")
-        except Exception:
-            pass
+        except OSError as err:
+            meta_lines.append(f"- **requirements.txt Read Note**: {err}")
 
     # 3. 目錄結構摘要 (限深 2 層)
     tree_lines = []
@@ -98,8 +98,8 @@ def get_project_metadata(root_dir: str) -> str:
                         tree_lines.append(f"  │   └── {sub.name}{'/' if sub.is_dir() else ''}")
             else:
                 tree_lines.append(f"  ├── {p.name}")
-    except Exception:
-        pass
+    except OSError as err:
+        tree_lines.append(f"  └── [Directory read notice: {err}]")
 
     if tree_lines:
         meta_lines.append("- **Project Directory Overview**:\n```text\n" + "\n".join(tree_lines[:25]) + "\n```")
