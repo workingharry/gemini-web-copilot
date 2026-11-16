@@ -156,15 +156,12 @@ def strip_code_fences_if_needed(text: str, output_path: Optional[str] = None) ->
         return text
 
     stripped = text.strip()
-    match = re.match(r"^```[a-zA-Z0-9_-]*\r?\n(.*?)\r?\n```$", stripped, re.DOTALL)
-    if match:
-        return match.group(1) + "\n"
-
     blocks = re.findall(r"```[a-zA-Z0-9_-]*\r?\n(.*?)\r?\n```", stripped, re.DOTALL)
-    if len(blocks) == 1:
-        return blocks[0] + "\n"
+    if blocks:
+        return "\n\n".join(b.strip() for b in blocks) + "\n"
 
-    return text
+    filtered = [l for l in stripped.splitlines() if not l.strip().startswith("```")]
+    return "\n".join(filtered) + "\n"
 
 
 def execute_ai_studio_query(
